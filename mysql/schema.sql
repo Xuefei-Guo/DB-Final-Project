@@ -6,10 +6,11 @@ CREATE DATABASE IF NOT EXISTS shop
 -- Select the database for the table definitions added in later steps.
 USE shop;
 
--- User IDs are supplied by the application or the shared dataset generator.
+-- MySQL generates independent primary keys for business inserts.
+-- The shared dataset generator may supply explicit IDs during data loading.
 -- created_at follows the project's UTC timestamp convention.
 CREATE TABLE IF NOT EXISTS users (
-    user_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL AUTO_INCREMENT,
     name VARCHAR(100) NOT NULL,
     email VARCHAR(254) NOT NULL,
     created_at DATETIME(6) NOT NULL,
@@ -19,7 +20,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 -- Category names are shared with the document store and graph database.
 CREATE TABLE IF NOT EXISTS categories (
-    category_id BIGINT NOT NULL,
+    category_id BIGINT NOT NULL AUTO_INCREMENT,
     name VARCHAR(64) NOT NULL,
     PRIMARY KEY (category_id),
     UNIQUE KEY uq_categories_name (name)
@@ -29,7 +30,7 @@ CREATE TABLE IF NOT EXISTS categories (
 -- Category-specific attributes and variant specifications belong in MongoDB.
 -- The return window starts at delivery; the fee is fixed per returned order item.
 CREATE TABLE IF NOT EXISTS products (
-    product_id BIGINT NOT NULL,
+    product_id BIGINT NOT NULL AUTO_INCREMENT,
     category_id BIGINT NOT NULL,
     name VARCHAR(160) NOT NULL,
     return_window_days SMALLINT NOT NULL,
@@ -46,7 +47,7 @@ CREATE TABLE IF NOT EXISTS products (
 -- Each sellable variant has its own unique SKU, current price, and stock.
 -- Match variant_id with MongoDB for category-specific variant attributes.
 CREATE TABLE IF NOT EXISTS product_variants (
-    variant_id BIGINT NOT NULL,
+    variant_id BIGINT NOT NULL AUTO_INCREMENT,
     product_id BIGINT NOT NULL,
     sku VARCHAR(64) NOT NULL,
     unit_price_cents BIGINT NOT NULL,
@@ -68,7 +69,7 @@ CREATE TABLE IF NOT EXISTS product_variants (
 -- item_count is the sum of item quantities, maintained by cart transactions.
 -- Increment version when cart contents change, not when the cart is opened.
 CREATE TABLE IF NOT EXISTS carts (
-    cart_id BIGINT NOT NULL,
+    cart_id BIGINT NOT NULL AUTO_INCREMENT,
     user_id BIGINT NOT NULL,
     status ENUM('ACTIVE', 'CONVERTED', 'ABANDONED') NOT NULL,
     created_at DATETIME(6) NOT NULL,
@@ -112,7 +113,7 @@ CREATE TABLE IF NOT EXISTS cart_items (
 -- Show enabled delivery options during checkout.
 -- Estimate shipment from order placement, then delivery from shipment.
 CREATE TABLE IF NOT EXISTS shipping_options (
-    shipping_option_id BIGINT NOT NULL,
+    shipping_option_id BIGINT NOT NULL AUTO_INCREMENT,
     name VARCHAR(64) NOT NULL,
     fee_cents BIGINT NOT NULL,
     dispatch_days SMALLINT NOT NULL,
@@ -133,7 +134,7 @@ CREATE TABLE IF NOT EXISTS shipping_options (
 -- Preserve the delivery name and charges agreed upon during checkout.
 -- All timestamps use UTC; actual shipment and delivery times may be unknown.
 CREATE TABLE IF NOT EXISTS orders (
-    order_id BIGINT NOT NULL,
+    order_id BIGINT NOT NULL AUTO_INCREMENT,
     cart_id BIGINT NOT NULL,
     shipping_option_id BIGINT NOT NULL,
     shipping_name_snapshot VARCHAR(64) NOT NULL,
@@ -172,7 +173,7 @@ CREATE TABLE IF NOT EXISTS orders (
 -- Store one row per variant in an order; returns refer to order_item_id.
 -- Checkout must verify the order subtotal equals the sum of item amounts.
 CREATE TABLE IF NOT EXISTS order_items (
-    order_item_id BIGINT NOT NULL,
+    order_item_id BIGINT NOT NULL AUTO_INCREMENT,
     order_id BIGINT NOT NULL,
     variant_id BIGINT NOT NULL,
     quantity INT NOT NULL,
@@ -200,7 +201,7 @@ CREATE TABLE IF NOT EXISTS order_items (
 -- Never store full card numbers; use simulated provider tokens for this project.
 -- Checkout must write the order and payment together and verify equal amounts.
 CREATE TABLE IF NOT EXISTS payments (
-    payment_id BIGINT NOT NULL,
+    payment_id BIGINT NOT NULL AUTO_INCREMENT,
     order_id BIGINT NOT NULL,
     method ENUM('CARD', 'BANK_ACCOUNT') NOT NULL,
     provider_token VARCHAR(160) NOT NULL,
@@ -219,7 +220,7 @@ CREATE TABLE IF NOT EXISTS payments (
 -- Return transactions must check delivery, the return window, and quantity limits.
 -- Shipping details may be filled after the request is created.
 CREATE TABLE IF NOT EXISTS returns (
-    return_id BIGINT NOT NULL,
+    return_id BIGINT NOT NULL AUTO_INCREMENT,
     order_item_id BIGINT NOT NULL,
     quantity INT NOT NULL,
     resolution ENUM('REFUND', 'EXCHANGE') NOT NULL,

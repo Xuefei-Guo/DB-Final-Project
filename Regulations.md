@@ -12,7 +12,7 @@
 
 ## 1. 全组共用约定
 
-- **共享 ID。** 用户、商品、变体、购物车和订单的业务 ID 由 A 分配。测试数据的 ID 按相同规则由 B 的生成脚本统一分配，四库复用同一批 ID。ID 为不超过 `2^53 - 1` 的正整数。MySQL 用 `BIGINT`，MongoDB 用 BSON `Int64`，Neo4j 用 `INTEGER`。Redis 和跨模块 JSON 用无前导零的十进制字符串，如 `"105"`。
+- **共享 ID。** 业务新增记录时，由 MySQL 为独立主键自动生成 ID，其他数据库引用同一实体时复用该 ID。测试数据由 B 的统一生成脚本分配固定 ID，导入 MySQL 时显式保留，四库使用同一批 ID。ID 为不超过 `2^53 - 1` 的正整数。MySQL 用 `BIGINT`，MongoDB 用 BSON `Int64`，Neo4j 用 `INTEGER`。Redis 和跨模块 JSON 用无前导零的十进制字符串，如 `"105"`。
 - **时间。** 统一用 UTC，跨库精度为毫秒。接口使用固定格式的 RFC 3339 时间戳，保留三位小数并以 `Z` 结尾，如 `2026-01-15T14:30:00.000Z`。全组共用同一个统计截止时间 `as_of`，时间窗包含起点和终点。按本地日期或时段统计时用 `America/Chicago`。
 - **类目和设备名称。** 商品类目至少包含 `fashion`、`headphones`、`home_decor`。新增类目时，先在 MySQL 的 `categories` 表登记小写名称，其他库沿用同一拼写。设备类型用 `tablet`、`laptop`、`phone`、`desktop`。
 - **接口调用。** 应用层统一使用 Python，通过 Python 函数调用各库模块。各模块使用对应驱动执行 SQL、MongoDB 查询、Redis 命令或 Cypher。数据生成器使用 Python。代码注释和 README 使用英文。
@@ -22,22 +22,24 @@
 
 在 `mysql/schema.sql` 定义下列 13 张表、约束和索引。数据库名建议用 `shop`。除标为可空的字段和生成列 `active_user_id` 外，字段均为 `NOT NULL`。
 
+独立主键使用 `AUTO_INCREMENT`。`cart_items` 保留复合主键，`return_refunds` 和 `return_exchanges` 沿用 `returns.return_id`，不设置自增。测试数据导入时显式指定 ID；业务插入时省略 ID，再用 `cursor.lastrowid` 取得新值。
+
 ### 用户与商品
 
 | 表 | 字段与约束 | 功能 |
 |---|---|---|
-| `users` | `user_id BIGINT PK`，`name VARCHAR(100)`，`email VARCHAR(254) UQ`，`created_at DATETIME(6)` | 保存用户信息，供购物车归属和 Q13 使用。 |
-| `categories` | `category_id BIGINT PK`，`name VARCHAR(64) NOT NULL UQ` | 登记第 1 节约定的商品类目。 |
-| `products` | `product_id BIGINT PK`，`category_id BIGINT FK → categories`，`name VARCHAR(160)`，`return_window_days SMALLINT`，`restocking_fee_cents BIGINT` | 款式身份、归类、名称和退货政策。本项目建档后保持商品所属类目不变。退货期限从送达起算，补货费为同一退货明细收取的固定费用。 |
-| `product_variants` | `variant_id BIGINT PK`，`product_id BIGINT FK → products`，`sku VARCHAR(64) UQ`，`unit_price_cents BIGINT`，`stock_qty INT` | 记录每个 SKU 的当前价格和库存。库存允许为零。已有交易的变体保持原 SKU 和商品归属。 |
+| `users` | `user_id BIGINT PK AUTO_INCREMENT`，`name VARCHAR(100)`，`email VARCHAR(254) UQ`，`created_at DATETIME(6)` | 保存用户信息，供购物车归属和 Q13 使用。 |
+| `categories` | `category_id BIGINT PK AUTO_INCREMENT`，`name VARCHAR(64) NOT NULL UQ` | 登记第 1 节约定的商品类目。 |
+| `products` | `product_id BIGINT PK AUTO_INCREMENT`，`category_id BIGINT FK → categories`，`name VARCHAR(160)`，`return_window_days SMALLINT`，`restocking_fee_cents BIGINT` | 款式身份、归类、名称和退货政策。本项目建档后保持商品所属类目不变。退货期限从送达起算，补货费为同一退货明细收取的固定费用。 |
+| `product_variants` | `variant_id BIGINT PK AUTO_INCREMENT`，`product_id BIGINT FK → products`，`sku VARCHAR(64) UQ`，`unit_price_cents BIGINT`，`stock_qty INT` | 记录每个 SKU 的当前价格和库存。库存允许为零。已有交易的变体保持原 SKU 和商品归属。 |
 
 ### 购物车与配送
 
 | 表 | 字段与约束 | 功能 |
 |---|---|---|
-| `carts` | `cart_id BIGINT PK`，`user_id BIGINT FK → users`，`status ENUM`，`created_at DATETIME(6)`，`updated_at DATETIME(6)`，`last_device ENUM` 可空，`item_count BIGINT DEFAULT 0`，`version BIGINT DEFAULT 1`，`active_user_id BIGINT` 生成列且 UQ | `active_user_id` 在车为 `ACTIVE` 时等于 `user_id`，其他状态为 NULL。唯一约束保证每位用户最多一辆活跃车。 |
+| `carts` | `cart_id BIGINT PK AUTO_INCREMENT`，`user_id BIGINT FK → users`，`status ENUM`，`created_at DATETIME(6)`，`updated_at DATETIME(6)`，`last_device ENUM` 可空，`item_count BIGINT DEFAULT 0`，`version BIGINT DEFAULT 1`，`active_user_id BIGINT` 生成列且 UQ | `active_user_id` 在车为 `ACTIVE` 时等于 `user_id`，其他状态为 NULL。唯一约束保证每位用户最多一辆活跃车。 |
 | `cart_items` | `cart_id BIGINT FK → carts`，`variant_id BIGINT FK → product_variants`，`quantity INT`，复合 PK `(cart_id, variant_id)` | 记录每个 SKU 的正整数数量。将数量改为零时删除该行。 |
-| `shipping_options` | `shipping_option_id BIGINT PK`，`name VARCHAR(64)`，`fee_cents BIGINT`，`dispatch_days SMALLINT`，`transit_days SMALLINT`，`is_enabled BOOLEAN` | `name` 是结账时显示的配送名称，例如标准配送、加急配送或隔夜配送。结账只展示启用的选项。下单后 `dispatch_days` 日预计发货，发货后 `transit_days` 日预计送达。 |
+| `shipping_options` | `shipping_option_id BIGINT PK AUTO_INCREMENT`，`name VARCHAR(64)`，`fee_cents BIGINT`，`dispatch_days SMALLINT`，`transit_days SMALLINT`，`is_enabled BOOLEAN` | `name` 是结账时显示的配送名称，例如标准配送、加急配送或隔夜配送。结账只展示启用的选项。下单后 `dispatch_days` 日预计发货，发货后 `transit_days` 日预计送达。 |
 
 `carts.status` 取 `ACTIVE`、`CONVERTED` 或 `ABANDONED`。`last_device` 用第 1 节的设备类型，首次使用购物车前为 NULL。
 
@@ -45,10 +47,10 @@
 
 | 表 | 字段与约束 | 功能 |
 |---|---|---|
-| `orders` | `order_id BIGINT PK`，`cart_id BIGINT FK → carts UQ`，`shipping_option_id BIGINT FK → shipping_options`，`shipping_name_snapshot VARCHAR(64)`，`status ENUM`，`placed_at DATETIME(6)`，`subtotal_cents BIGINT`，`tax_cents BIGINT`，`shipping_fee_cents BIGINT`，`total_cents BIGINT`，`estimated_ship_at DATETIME(6)`，`estimated_delivery_at DATETIME(6)`，`shipped_at DATETIME(6)` 可空，`delivered_at DATETIME(6)` 可空 | 通过来源购物车关联用户。总额等于小计、税、运费之和，预计送达时间不得早于预计发货时间。 |
-| `order_items` | `order_item_id BIGINT PK`，`order_id BIGINT FK → orders`，`variant_id BIGINT FK → product_variants`，`quantity INT`，`product_name_snapshot VARCHAR(160)`，`unit_price_cents BIGINT`，`return_window_days SMALLINT`，`restocking_fee_cents BIGINT`，UQ `(order_id, variant_id)` | 购买数量、成交价、商品名和当时适用的退货政策。订单小计等于购买明细金额之和。 |
-| `payments` | `payment_id BIGINT PK`，`order_id BIGINT FK → orders UQ`，`method ENUM`，`provider_token VARCHAR(160)`，`amount_cents BIGINT`，`approved_at DATETIME(6)` | 本项目每笔确认订单约定一条已获批支付。支付方式为 `CARD/BANK_ACCOUNT`，支付金额与订单总额相同。样例使用支付方风格的模拟 token，数据库禁止保存完整卡号。 |
-| `returns` | `return_id BIGINT PK`，`order_item_id BIGINT FK → order_items UQ`，`quantity INT`，`resolution ENUM`，`status ENUM`，`reason VARCHAR(255)`，`requested_at DATETIME(6)`，`updated_at DATETIME(6)`，`return_shipping_method VARCHAR(24)` 可空，`return_label_ref VARCHAR(160)` 可空，`return_tracking_code VARCHAR(64)` 可空，`estimated_resolution_at DATETIME(6)` 可空 | 保存退回申请、原订单明细、退回件数、处理类型、进度和寄回信息。退货标签引用可供界面打印。 |
+| `orders` | `order_id BIGINT PK AUTO_INCREMENT`，`cart_id BIGINT FK → carts UQ`，`shipping_option_id BIGINT FK → shipping_options`，`shipping_name_snapshot VARCHAR(64)`，`status ENUM`，`placed_at DATETIME(6)`，`subtotal_cents BIGINT`，`tax_cents BIGINT`，`shipping_fee_cents BIGINT`，`total_cents BIGINT`，`estimated_ship_at DATETIME(6)`，`estimated_delivery_at DATETIME(6)`，`shipped_at DATETIME(6)` 可空，`delivered_at DATETIME(6)` 可空 | 通过来源购物车关联用户。总额等于小计、税、运费之和，预计送达时间不得早于预计发货时间。 |
+| `order_items` | `order_item_id BIGINT PK AUTO_INCREMENT`，`order_id BIGINT FK → orders`，`variant_id BIGINT FK → product_variants`，`quantity INT`，`product_name_snapshot VARCHAR(160)`，`unit_price_cents BIGINT`，`return_window_days SMALLINT`，`restocking_fee_cents BIGINT`，UQ `(order_id, variant_id)` | 购买数量、成交价、商品名和当时适用的退货政策。订单小计等于购买明细金额之和。 |
+| `payments` | `payment_id BIGINT PK AUTO_INCREMENT`，`order_id BIGINT FK → orders UQ`，`method ENUM`，`provider_token VARCHAR(160)`，`amount_cents BIGINT`，`approved_at DATETIME(6)` | 本项目每笔确认订单约定一条已获批支付。支付方式为 `CARD/BANK_ACCOUNT`，支付金额与订单总额相同。样例使用支付方风格的模拟 token，数据库禁止保存完整卡号。 |
+| `returns` | `return_id BIGINT PK AUTO_INCREMENT`，`order_item_id BIGINT FK → order_items UQ`，`quantity INT`，`resolution ENUM`，`status ENUM`，`reason VARCHAR(255)`，`requested_at DATETIME(6)`，`updated_at DATETIME(6)`，`return_shipping_method VARCHAR(24)` 可空，`return_label_ref VARCHAR(160)` 可空，`return_tracking_code VARCHAR(64)` 可空，`estimated_resolution_at DATETIME(6)` 可空 | 保存退回申请、原订单明细、退回件数、处理类型、进度和寄回信息。退货标签引用可供界面打印。 |
 | `return_refunds` | `return_id BIGINT PK, FK → returns`，`refund_amount_cents BIGINT` 可空，`restocking_fee_cents BIGINT DEFAULT 0` | 保存实际扣除的补货费和扣费后的净退款额。退款完成前，净退款额留空。 |
 | `return_exchanges` | `return_id BIGINT PK, FK → returns`，`exchange_variant_id BIGINT FK → product_variants NOT NULL`，`shipped_at DATETIME(6)` 可空 | 保存要换的新 SKU。替换商品寄出后记录发货时间。 |
 
@@ -83,14 +85,16 @@ erDiagram
 
 ### 写入事务
 
-在 `mysql/transactions.py` 放 A 维护的 MySQL 写入函数或演示脚本。跨表检查和相关写入在同一个事务内完成。
+在 `mysql/transactions/` 按业务分文件：`mysql/transactions/carts.py` 放购物车操作；`mysql/transactions/orders.py` 放结账和订单操作；`mysql/transactions/returns.py` 放退换货操作。各文件保留本模块使用的私有辅助函数，共用 `mysql.db.get_connection()`，`__init__.py` 保持为空。调用时从对应模块导入，例如 `from mysql.transactions.orders import checkout`。每个业务函数管理自己的连接与事务，跨表检查和相关写入在同一个事务内完成。
 
-- **使用购物车。** 用户打开或恢复活跃购物车时，更新 `last_device` 和 `updated_at`。修改商品时，用 `SELECT ... FOR UPDATE` 锁住活跃购物车并更新 `cart_items`，在同一事务写回明细件数之和 `item_count`，更新设备和时间并递增 `version`。打开或恢复购物车只记录访问，沿用当前版本。修改商品提交后按第 3 节记录行为事件，结账时才扣减库存。
-- **预览结账。** 按当前 SKU 单价计算商品小计，列出启用的配送选项。选择配送后展示商品小计、税费、运费、应付总额和预计发货及送达时间，供用户确认。
-- **结账。** 锁定购物车，已有订单时返回原订单。否则检查购物车活跃、明细非空且版本与用户确认时一致。版本变化时返回最新购物车供用户重新确认。按固定 SKU 顺序锁定库存行并读取单价，检查配送选项仍启用，用当前商品小计、运费和传入的税费重算总额。配送已停用或金额与用户确认值不同时，返回最新结账信息供重新确认。用 `stock_qty >= quantity` 条件扣减库存并执行本地模拟支付。库存不足或支付失败时回滚。成功时写入 `orders`、`order_items`、`payments`，核对订单小计和支付金额，再将购物车标为 `CONVERTED`、更新版本并提交。
-- **更新订单状态。** 按 `CONFIRMED → SHIPPED → DELIVERED` 转换，并保存实际发货和送达时间。若演示取消，允许从 `CONFIRMED` 转为 `CANCELLED`，在同一事务恢复库存，购物车保留已转化记录。
-- **申请退换货。** 检查订单已送达且仍在退货期限内，退回件数在 1 到购买件数之间。在同一事务写入 `returns` 和唯一一条匹配明细。类型为 `REFUND` 时写 `return_refunds`，类型为 `EXCHANGE` 时写 `return_exchanges`。
-- **完成退换货。** 主表状态走 `REQUESTED → IN_TRANSIT → RECEIVED → COMPLETED`，另有 `REJECTED`。锁定申请并确认状态为 `RECEIVED` 后处理。退款明细记录净退款额和实际补货费。净额为退回件数乘成交单价减补货费。补货费取订单明细中的政策快照，上限为退回商品成交金额。换货选同款另一 SKU，确认寄出时扣减新 SKU 库存并记录发货时间。明细、库存变化和 `COMPLETED` 状态一起提交。入库流程判断退回品能否重新销售。
+- **打开购物车。** 提供 `open_cart(user_id, device)`，由函数管理连接并提交或回滚事务。先锁定用户记录，再查找并锁定其活跃购物车。有活跃车时恢复；没有时由 MySQL 自动生成 `cart_id` 并创建空车。更新 `last_device` 和 `updated_at`，已有车的明细、件数和版本保持原值，返回购物车信息。
+- **修改购物车。** 提供 `set_cart_item_quantity(user_id, cart_id, variant_id, quantity, device, expected_version)`，数量表示修改后的最终件数，0 表示删除。用 `SELECT ... FOR UPDATE` 锁住购物车，检查用户归属、活跃状态和确认版本。版本不符时结束事务，返回最新购物车供重新确认。核对 SKU 存在后，在同一事务修改明细、重算 `item_count`、更新设备和时间，实际改变明细时才递增 `version`。返回 `cart`（含明细）、`requires_confirmation` 和 `event`；未改变明细时 `event` 为 None。提交成功后，由应用按第 3 节的事件 ID 和重试规则将事件交给 B 记录。结账时才扣减库存。
+- **预览结账。** 提供 `preview_checkout(user_id, cart_id, tax_cents, shipping_option_id=None)`。检查购物车归属、活跃状态和非空明细，以同一只读快照读取版本、当前 SKU 价格及启用的配送选项。返回 `cart_id`、`version`、`items`（含单价、数量、行金额和当前库存）、按明细合计的 `item_count`、`subtotal_cents`、`tax_cents`、`shipping_options`、`shipping_option`、`shipping_fee_cents`、`total_cents`、`quoted_at`、`estimated_ship_at` 和 `estimated_delivery_at`。未选配送时，选中选项、运费、总额和两个预计时间为 None；选定后按当前费用计算，预计发货时间为报价时间加配送准备天数，预计送达再加运输天数。非法输入、无效购物车或未启用的配送选项抛出 ValueError。预览不修改数据，库存不足仍可展示；结账时重新检查库存、版本和金额，并以实际下单时间重算预计日期。
+- **结账。** 提供 `checkout(user_id, cart_id, confirmed_quote, payment_method, provider_token)`，`confirmed_quote` 使用已选配送的预览结果。返回 `order`（含明细和支付信息）、`cart`、`quote` 和 `requires_confirmation`。先锁车并核对归属，已有订单时直接返回原订单及原支付；新单检查活跃状态和确认版本，版本变化时返回最新购物车（即使已删空）供重新确认。购物车为空时不能创建订单。按 `variant_id` 升序逐行锁定 SKU，读取当前单价和库存，并共享锁定商品名称、退货政策及启用配送选项。以服务端数量、单价、运费及确认报价中的税费重算费用，核对各行数量和单价、四项费用及选中配送属性；变化时结束事务并返回新报价，配送停用时新报价为未选配送状态。用 `stock_qty >= quantity` 条件扣库并执行本地模拟支付。支付方式为 CARD 或 BANK_ACCOUNT，模拟 token 以 `tok_` 开头且最长 160 字符，`tok_declined` 用于演示失败。库存不足或模拟支付失败抛出 ValueError 并回滚。成功时用自增 ID 写入订单、明细和获批支付，保存商品名、成交价、退货政策和配送信息快照，核对小计与支付金额，再将购物车标为 CONVERTED、更新件数和版本后一起提交。实际预计日期按本次下单时间重算；确认时不比较预览的绝对日期。
+- **更新订单状态。** 提供 `update_order_status(order_id, target_status)`，供后台或演示脚本调用，返回订单及其明细、支付信息。锁定订单后，只允许 `CONFIRMED → SHIPPED → DELIVERED` 或 `CONFIRMED → CANCELLED`。发货、送达时分别记录实际时间，时间不能早于前一业务步骤；重复设置当前状态直接返回，不改时间或库存。取消时按 `variant_id` 升序恢复各明细的库存，防止库存整数溢出，与状态更新一起提交；保留购物车的 CONVERTED 历史及原获批支付记录。非法状态转换或写入失败时回滚。
+- **申请退换货。** 提供 `request_return(user_id, order_item_id, quantity, resolution, reason, exchange_variant_id=None)`，返回申请全部字段和 `refund`、`exchange` 两个明细字段，不适用的明细为 None。锁定订单明细并核对用户归属，每条购买明细最多一条申请。新申请要求订单为 DELIVERED，退回件数为 1 到购买件数；以订单明细的退货政策快照判断期限，从实际送达时间起算，包含截止时刻。理由去首尾空白后为 1–255 字符。REFUND 不传替换变体，写入 `returns` 和 `return_refunds`，净退款额为 NULL、实际补货费初始为 0；EXCHANGE 必须传同款商品的另一变体，写入 `returns` 和 `return_exchanges`，替换品发货时间为 NULL。申请初始状态为 REQUESTED，寄回信息暂留空，不退款、不预留或变更库存。相同参数重试返回原申请的当前进度，不再检查是否超期；同一购买明细的不同申请报错。主表与匹配明细一起提交，失败回滚。
+- **更新退换进度。** 提供 `update_return_status(return_id, target_status, *, return_shipping_method=None, return_label_ref=None, return_tracking_code=None, estimated_resolution_at=None)`，供后台或演示脚本调用，返回申请及对应处理明细。锁定申请后允许 `REQUESTED → IN_TRANSIT → RECEIVED`，只允许从 REQUESTED 转为 REJECTED，以保持 Q9 对已收货申请的统计口径。从 REQUESTED 转入 IN_TRANSIT 时，保存的信息中必须有寄回方式和运单号；标签引用和预计处理时间可选。在非终态保持当前状态时，也可补充或修改寄回信息。可选参数 None 表示保留原值；字符串去首尾空白，长度遵守表定义。预计处理时间使用 Python datetime，无时区时按 UTC，有时区时转 UTC，保存为毫秒精度且不早于申请时间。实际变更时更新 `updated_at`，不能早于已有申请和更新时间；相同状态与信息重试不写库。COMPLETED 和 REJECTED 不再接受变更，但相同状态与信息可重复读取。本函数不退款、不改库存，进入 COMPLETED 必须调用完成函数；失败回滚。
+- **完成退换货。** 提供 `complete_return(return_id, *, restock_returned)`，供后台或演示脚本调用，返回申请及对应处理明细。`restock_returned` 必须为 bool，由调用方根据质检结果决定：True 将本次退回件数全部加回原 SKU 库存，False 不加入可售库存。锁定申请后，已为 COMPLETED 的直接返回原结果，重试传入的入库参数不再生效；其他状态仅允许 RECEIVED 继续处理。普通读取不可变的订单明细，核对退回数量，再按 `variant_id` 升序锁定需要处理的 SKU。退款为本地模拟：商品金额为退回件数乘成交单价，补货费按订单明细中的固定政策快照收取一次，上限为商品金额，净退款额为商品金额减补货费；保存两项金额，不修改原获批支付记录。换货重新确认是同款另一 SKU，用库存不低于退回件数的条件扣减替换品库存，并记录本次实际发货时间；本项目换货不处理差价。入库时防止库存整数溢出。完成时间用 UTC 毫秒精度且不早于申请和已有更新时间。处理明细、库存变化、COMPLETED 和 `updated_at` 一起提交；库存不足或任何写入失败均回滚。
 
 ### A 的交付清单
 
