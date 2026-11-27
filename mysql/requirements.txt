@@ -1,0 +1,5 @@
+# MySQL driver with support for MySQL SHA-2 password authentication.
+PyMySQL[rsa]==1.2.4
+
+# Read local connection settings from the project .env file.
+python-dotenv==1.2.4

@@ -94,7 +94,7 @@ erDiagram
 
 ### A 的交付清单
 
-**给 B、C 的只读接口。** 在 `mysql/interfaces.py` 提供以下 Python 函数。对应的 SQL 文件放在 `mysql/`，用接口名命名。
+**给 B、C 的只读接口。** 在 `mysql/interfaces.py` 提供以下 Python 函数。使用 PyMySQL 执行 SQL，SQL 直接写在函数中。调用方通过 `mysql.db.get_connection()` 创建连接并传给接口。接口只管理游标，连接和事务由调用方管理。
 
 - `product_catalog`（B、C 共用）。返回全部商品，每款一行，字段为 `product_id`、`name`、`category_name`。名称分别取自 `products.name` 和 `categories.name`。B 用它同步 MongoDB 商品目录，C 用它构建 Neo4j 商品和类目节点。
 - `product_variants_by_ids(product_ids)`（给 B）。输入一批商品 ID，每个匹配变体返回一行，字段为 `product_id`、`variant_id`、`sku`、`unit_price_cents`、`stock_qty`。空输入返回空数组。B 在 Q4 用 `variant_id` 匹配规格和库存。

@@ -2,3 +2,11 @@
 .env
 .env.*
 !.env.example
+
+# Local Python environment and cached bytecode.
+.venv/
+__pycache__/
+*.py[cod]
+
+# Local VS Code settings.
+.vscode/
