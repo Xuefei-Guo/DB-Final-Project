@@ -93,7 +93,7 @@ erDiagram
 - **结账。** 提供 `checkout(user_id, cart_id, confirmed_quote, payment_method, provider_token)`，`confirmed_quote` 使用已选配送的预览结果。返回 `order`（含明细和支付信息）、`cart`、`quote` 和 `requires_confirmation`。先锁车并核对归属，已有订单时直接返回原订单及原支付；新单检查活跃状态和确认版本，版本变化时返回最新购物车（即使已删空）供重新确认。购物车为空时不能创建订单。按 `variant_id` 升序逐行锁定 SKU，读取当前单价和库存，并共享锁定商品名称、退货政策及启用配送选项。以服务端数量、单价、运费及确认报价中的税费重算费用，核对各行数量和单价、四项费用及选中配送属性；变化时结束事务并返回新报价，配送停用时新报价为未选配送状态。用 `stock_qty >= quantity` 条件扣库并执行本地模拟支付。支付方式为 CARD 或 BANK_ACCOUNT，模拟 token 以 `tok_` 开头且最长 160 字符，`tok_declined` 用于演示失败。库存不足或模拟支付失败抛出 ValueError 并回滚。成功时用自增 ID 写入订单、明细和获批支付，保存商品名、成交价、退货政策和配送信息快照，核对小计与支付金额，再将购物车标为 CONVERTED、更新件数和版本后一起提交。实际预计日期按本次下单时间重算；确认时不比较预览的绝对日期。
 - **更新订单状态。** 提供 `update_order_status(order_id, target_status)`，供后台或演示脚本调用，返回订单及其明细、支付信息。锁定订单后，只允许 `CONFIRMED → SHIPPED → DELIVERED` 或 `CONFIRMED → CANCELLED`。发货、送达时分别记录实际时间，时间不能早于前一业务步骤；重复设置当前状态直接返回，不改时间或库存。取消时按 `variant_id` 升序恢复各明细的库存，防止库存整数溢出，与状态更新一起提交；保留购物车的 CONVERTED 历史及原获批支付记录。非法状态转换或写入失败时回滚。
 - **申请退换货。** 提供 `request_return(user_id, order_item_id, quantity, resolution, reason, exchange_variant_id=None)`，返回申请全部字段和 `refund`、`exchange` 两个明细字段，不适用的明细为 None。锁定订单明细并核对用户归属，每条购买明细最多一条申请。新申请要求订单为 DELIVERED，退回件数为 1 到购买件数；以订单明细的退货政策快照判断期限，从实际送达时间起算，包含截止时刻。理由去首尾空白后为 1–255 字符。REFUND 不传替换变体，写入 `returns` 和 `return_refunds`，净退款额为 NULL、实际补货费初始为 0；EXCHANGE 必须传同款商品的另一变体，写入 `returns` 和 `return_exchanges`，替换品发货时间为 NULL。申请初始状态为 REQUESTED，寄回信息暂留空，不退款、不预留或变更库存。相同参数重试返回原申请的当前进度，不再检查是否超期；同一购买明细的不同申请报错。主表与匹配明细一起提交，失败回滚。
-- **更新退换进度。** 提供 `update_return_status(return_id, target_status, *, return_shipping_method=None, return_label_ref=None, return_tracking_code=None, estimated_resolution_at=None)`，供后台或演示脚本调用，返回申请及对应处理明细。锁定申请后允许 `REQUESTED → IN_TRANSIT → RECEIVED`，只允许从 REQUESTED 转为 REJECTED，以保持 Q9 对已收货申请的统计口径。从 REQUESTED 转入 IN_TRANSIT 时，保存的信息中必须有寄回方式和运单号；标签引用和预计处理时间可选。在非终态保持当前状态时，也可补充或修改寄回信息。可选参数 None 表示保留原值；字符串去首尾空白，长度遵守表定义。预计处理时间使用 Python datetime，无时区时按 UTC，有时区时转 UTC，保存为毫秒精度且不早于申请时间。实际变更时更新 `updated_at`，不能早于已有申请和更新时间；相同状态与信息重试不写库。COMPLETED 和 REJECTED 不再接受变更，但相同状态与信息可重复读取。本函数不退款、不改库存，进入 COMPLETED 必须调用完成函数；失败回滚。
+- **更新退换进度。** 提供 `update_return_status(return_id, target_status, *, return_shipping_method=None, return_label_ref=None, return_tracking_code=None, estimated_resolution_at=None)`，供后台或演示脚本调用，返回申请及对应处理明细。锁定申请后允许 `REQUESTED → IN_TRANSIT → RECEIVED`，只允许从 REQUESTED 转为 REJECTED。从 REQUESTED 转入 IN_TRANSIT 时，保存的信息中必须有寄回方式和运单号；标签引用和预计处理时间可选。在非终态保持当前状态时，也可补充或修改寄回信息。可选参数 None 表示保留原值；字符串去首尾空白，长度遵守表定义。预计处理时间使用 Python datetime，无时区时按 UTC，有时区时转 UTC，保存为毫秒精度且不早于申请时间。实际变更时更新 `updated_at`，不能早于已有申请和更新时间；相同状态与信息重试不写库。COMPLETED 和 REJECTED 不再接受变更，但相同状态与信息可重复读取。本函数不退款、不改库存，进入 COMPLETED 必须调用完成函数；失败回滚。
 - **完成退换货。** 提供 `complete_return(return_id, *, restock_returned)`，供后台或演示脚本调用，返回申请及对应处理明细。`restock_returned` 必须为 bool，由调用方根据质检结果决定：True 将本次退回件数全部加回原 SKU 库存，False 不加入可售库存。锁定申请后，已为 COMPLETED 的直接返回原结果，重试传入的入库参数不再生效；其他状态仅允许 RECEIVED 继续处理。普通读取不可变的订单明细，核对退回数量，再按 `variant_id` 升序锁定需要处理的 SKU。退款为本地模拟：商品金额为退回件数乘成交单价，补货费按订单明细中的固定政策快照收取一次，上限为商品金额，净退款额为商品金额减补货费；保存两项金额，不修改原获批支付记录。换货重新确认是同款另一 SKU，用库存不低于退回件数的条件扣减替换品库存，并记录本次实际发货时间；本项目换货不处理差价。入库时防止库存整数溢出。完成时间用 UTC 毫秒精度且不早于申请和已有更新时间。处理明细、库存变化、COMPLETED 和 `updated_at` 一起提交；库存不足或任何写入失败均回滚。
 
 ### A 的交付清单
@@ -105,7 +105,7 @@ erDiagram
 - `purchased_order_products`（给 C）。返回已支付且未取消的订单商品，字段为 `order_id`、`product_id`、`quantity`。同一订单内同款商品的不同 SKU 按数量合计为一行。C 用它构建 Neo4j 的 `CONTAINS` 边，与商品目录使用同一次 MySQL 读取快照。
 - `active_cart_by_user_id(user_id)`（给 C）。输入已验证会话的 `user_id`，返回对应 `ACTIVE` 购物车的 `cart_id`，没有活跃车时返回 `null`。C 用它从不同设备的会话找到同一辆购物车。
 
-**给助教运行的 MySQL 查询。** 在 `queries/` 放 Q3、Q7、Q8、Q9、Q10、Q11、Q13 的 SQL 文件，如 `q03.sql`。在各文件开头按第 7 节标明参数，由 C 接入统一入口。
+**给助教运行的 MySQL 查询。** 在 `queries/` 放 Q3、Q7、Q8、Q9、Q10、Q11、Q13 的 Python 文件，如 `q03.py`，SQL 直接写在 Python 函数中，用 PyMySQL 执行。每题提供 `qXX(connection, ...)`，由调用方管理连接和事务，函数返回结果列表。业务参数通过函数签名和必要的文档字符串说明，口径见第 7 节。在项目根目录按模块运行，如 `python -m queries.q03`；入口通过 `mysql.db.get_connection()` 读取 `.env` 配置并连接 MySQL、输出结果，异常时打印错误并以非零状态退出；也可由 C 导入查询函数接入统一入口。
 
 ## 3. MongoDB｜B 负责商品属性与事件
 
@@ -258,7 +258,7 @@ flowchart LR
 
 13 道作业查询的脚本统一放在 `queries/`，按 `q01` 至 `q13` 命名，扩展名对应所用语言。跨库查询的入口也放在此处，调用各数据库目录提供的接口。各题负责人按下表分配。
 
-涉及 Sarah 的查询使用同一个 `sarah_user_id`。含 `as_of` 的查询把它作为统计截止时间。近 30 天按 UTC 从 `as_of` 往前推 30 天，近六个日历月按 UTC 往前推六个月。目标月无对应日时取月末，时间窗两端都计入。复跑用同一批数据库快照和同一个 `as_of`，订单、购物车、退换状态和共购图读取该快照中的值。
+涉及 Sarah 的查询均指向同一批数据中的指定用户。Q8 通过 `users.name = 'Sarah'` 查找；需要用户 ID 的其他查询使用该用户的 `sarah_user_id`。含 `as_of` 的查询把它作为统计截止时间。近 30 天按 UTC 从 `as_of` 往前推 30 天，近六个日历月按 UTC 往前推六个月。目标月无对应日时取月末，时间窗两端都计入。复跑用同一批数据库快照和同一个 `as_of`，订单、购物车、退换状态和共购图读取该快照中的值。
 
 | 查询 | 负责人 | 数据库 | 参数 | 返回结果 | 统计口径 |
 |---|---|---|---|---|---|
@@ -266,15 +266,15 @@ flowchart LR
 | Q2 最近浏览 | C 负责查询入口，B 提供 MongoDB 查询 | Redis、MongoDB | `sarah_user_id`、`as_of` | 最多五款商品，每款一行。返回 `product_id`、`name`、`last_viewed_at`。没有结果时返回空列表。 | 统计 Sarah 近六个日历月的 `VIEW`，每款商品取最后一次浏览时间。按时间降序、商品 ID 升序取前五款。Redis 命中时返回同一统计截止时间的结果，未命中时从 MongoDB 回填。 |
 | Q3 低库存变体 | A | MySQL | 无 | 每个变体一行。返回 `product_id`、`variant_id`、`sku`、`stock_qty`。 | 查所有类目中当前库存少于 5 件的变体，包含库存为 0 的变体。 |
 | Q4 指定规格且有货的服装 | B | MongoDB、MySQL | 无 | 每款符合条件的商品一行。返回 `product_id`、`name`，名称取自 MongoDB 目录。 | 在 `fashion` 中按第 3 节的颜色和尺码取值筛选蓝色或 L 码。至少有一个符合规格的同一变体在 MySQL 的库存大于 0 才返回该商品。按商品去重。 |
-| Q5 商品浏览量 | B | MongoDB | `as_of` | 每款目录商品一行。返回 `product_id`、`name`、`view_count`。 | 每条截至 `as_of` 的 `VIEW` 计一次，零次浏览的商品返回 0。按次数降序、商品 ID 升序排列。 |
+| Q5 商品浏览量 | B | MongoDB | 无 | 每款目录商品一行。返回 `product_id`、`name`、`view_count`。 | 每条 `VIEW` 计一次，零次浏览的商品返回 0。按次数降序、商品 ID 升序排列。 |
 | Q6 搜索词频与时段 | B | MongoDB | `sarah_user_id`、`as_of` | 每个搜索词一行。返回 `search_term`、`total_count`、`night_count`、`morning_count`、`afternoon_count`、`evening_count`。 | 筛选 Sarah 近 30 天的 `SEARCH`，搜索词去首尾空白并转小写后分组。将事件时间转为 `America/Chicago` 后按下方时段计数。某时段无记录时计 0，总次数等于四个时段之和。 |
 | Q7 活跃购物车 | A | MySQL | 无 | 每辆活跃车一行。返回 `cart_id`、`last_device`、`item_count`、`subtotal_cents`。 | 查快照中状态为 `ACTIVE` 的购物车。件数直接读取 `carts.item_count`。购物车总额取结账前商品小计，按当前 SKU 单价乘数量后求和，税费和运费在结账时确定。空车件数和小计为 0，首次使用购物车前 `last_device` 为 NULL。 |
-| Q8 Sarah 的订单 | A | MySQL | `sarah_user_id`、`as_of` | 每条订单明细一行。返回 `order_id`、`order_item_id`、`product_name_snapshot`、`sku`、`quantity`、`unit_price_cents`、`payment_method`、`shipping_name_snapshot`、`order_status`。 | 查 Sarah 的全部订单，按 `placed_at <= as_of` 筛选，包含取消订单。商品名、成交单价和配送名称取下单时保存的值。 |
-| Q9 Sarah 的退换货 | A | MySQL | `sarah_user_id`、`as_of` | 每条退换申请一行。返回 `return_id`、`order_item_id`、`product_name_snapshot`、`sku`、退回件数 `quantity`、`resolution`、`status`、`refund_amount_cents`、`restocking_fee_cents`。 | 查 Sarah 的退换申请中平台已收到退回品的记录，状态取 `RECEIVED` 或 `COMPLETED`，且 `requested_at <= as_of`。按 `return_id` 左连接退款明细。换货的净退款额为 NULL，补货费为 0。退款未完成时净退款额也为 NULL。 |
-| Q10 平均购买间隔 | A | MySQL | `sarah_user_id`、`as_of` | 一行 `average_days_between_purchases`，单位为天。 | 只统计 Sarah 的有效购买。有效购买为 `payments.approved_at <= as_of` 且状态未取消的订单。按获批时间排序，用 `America/Chicago` 的日历日期计算相邻购买的天数差，再取平均。同日间隔为 0，不足两笔有效购买时返回 NULL。 |
-| Q11 购物车未转化率 | A | MySQL | `as_of` | 一行，返回 `cart_count`、`unconverted_cart_count`、`unconverted_pct`。 | 分母是近 30 天创建的购物车数。分子是其中没有关联订单满足 `placed_at <= as_of` 的购物车数。取消的关联订单也算曾转化。百分比为分子除以分母再乘 100，分母为 0 时返回 NULL。 |
+| Q8 Sarah 的订单 | A | MySQL | 无 | 每条订单明细一行。返回 `order_id`、`order_item_id`、`product_name_snapshot`、`sku`、`quantity`、`unit_price_cents`、`payment_method`、`shipping_name_snapshot`、`order_status`。 | 通过 `users.name = 'Sarah'` 找到指定用户，查询其全部订单，包含取消订单，不加时间限制。商品名、成交单价和配送名称取下单时保存的值。 |
+| Q9 Sarah 的退换货 | A | MySQL | 无 | 每条退换申请一行。返回 `return_id`、`order_item_id`、`product_name_snapshot`、`sku`、退回件数 `quantity`、`resolution`、`status`、`refund_amount_cents`、`restocking_fee_cents`。 | 查 Sarah 的全部退换记录，展示当前退款或换货状态，不增加时间或状态筛选。按 `return_id` 左连接退款明细。换货的净退款额为 NULL，补货费为 0。退款未完成时净退款额也为 NULL。 |
+| Q10 平均购买间隔 | A | MySQL | 无 | 一行 `average_days_between_purchases`，单位为天。 | 只统计 Sarah 的有效购买。有效购买为已获批支付且状态未取消的订单。按获批时间排序，用 `America/Chicago` 的日历日期计算相邻购买的天数差，再取平均。同日间隔为 0，不足两笔有效购买时返回 NULL。 |
+| Q11 购物车未转化率 | A | MySQL | 无（运行时自动取当前时间） | 一行，返回 `cart_count`、`unconverted_cart_count`、`unconverted_pct`。 | 分母是近 30 天创建的购物车数。分子是其中没有关联订单满足 `placed_at <= as_of` 的购物车数。取消的关联订单也算曾转化。百分比为分子除以分母再乘 100，分母为 0 时返回 NULL。 |
 | Q12 耳机共购商品 | C | Neo4j | 无 | 最多三行，每款商品一行。返回 `product_id`、`name`、`order_count`。 | 在已同步的图快照中从 `headphones` 找同单商品。候选商品可为另一款耳机，商品 ID 必须与触发查询的耳机不同。每个候选商品在同一订单只计一次。按订单数降序、商品 ID 升序取前三。 |
-| Q13 用户订单数与最近购买 | A | MySQL | `as_of` | 快照中每位用户一行。返回 `user_id`、`order_count`、`days_since_last_purchase`。 | 按 `placed_at <= as_of` 统计全部订单，包含取消订单。最近购买沿用 Q10 的有效购买定义，计算最近付款日到截止日的 `America/Chicago` 日历天数。无订单时订单数为 0，无有效购买时天数为 NULL。 |
+| Q13 用户订单数与最近购买 | A | MySQL | 无（运行时自动取当前时间） | 快照中每位用户一行。返回 `user_id`、`order_count`、`days_since_last_purchase`。 | 统计全部订单，包含取消订单；`as_of` 仅用于计算距最近购买的天数。最近购买沿用 Q10 的有效购买定义，计算最近付款日到截止日的 `America/Chicago` 日历天数。无订单时订单数为 0，无有效购买时天数为 NULL。 |
 
 Q6 的本地时段按左闭右开划分。夜间为 00:00 至 06:00，上午为 06:00 至 12:00，下午为 12:00 至 18:00，晚间为 18:00 至次日 00:00。
 
@@ -319,8 +319,8 @@ Q6 的本地时段按左闭右开划分。夜间为 00:00 至 06:00，上午为 
 - **统一生成。** B 在 `generator/generate.py` 维护统一脚本，生成联调用小样本和性能测试用全量数据，批次信息写入 `data/manifest.json`。脚本按同一批 ID 和时间线产出 MySQL 基础与交易数据、MongoDB 商品规格与行为事件，以及 Redis 会话初始化所需的用户和设备清单。每批记录随机种子、`as_of` 和 `sarah_user_id`。生成后校验跨库引用，例如每条购物车事件的用户与购物车归属一致、涉及的 SKU 存在。Neo4j 由 C 从该批 MySQL 数据同步。
 
 - **数据规模。** 按作业 Part 3 生成并装载至少 10,000 名用户、5,000 款商品、100,000 笔订单和 500,000 条用户事件。时间戳合理分布在截至生成日的过去 12 个月内，符合从购物车到下单、配送、退货的先后顺序。按第 1、3 节覆盖不同类目的商品属性和变体，并包含购物车、会话和行为记录。四类数据库都要有数据，并各用于至少一道查询。
-- **Sarah 的数据。** B 在同一批数据中生成名为 Sarah 的用户、过去 12 个月内至少 5 笔订单（至少一笔含耳机，至少两笔属于 Q10 的有效购买）、至少 1 条符合 Q9 口径的退货记录、近 6 个月的商品浏览和近 30 天的搜索记录，并准备同一辆活跃购物车以及至少两台设备的会话和操作记录。A 和 C 联调时验证 Sarah 能用两台设备操作这辆车。时间窗按第 7 节约定。
-- **性能记录。** 在全量数据上实际运行第 7 节全部 13 题。各题负责人记录结果、三次耗时的中位数和可获取的执行计划。跨库题按第 6 节的端到端口径计时。Q2 的三次测试使用同一缓存条件并注明命中或未命中。目标是每道题在 2 秒内完成。超出时定位瓶颈，记录优化方案和调整后的复测耗时。
+- **Sarah 的数据。** B 在同一批数据中生成唯一一名 `name` 为 Sarah 的指定用户，其他用户不使用此名称；为她生成过去 12 个月内至少 5 笔订单（至少一笔含耳机，至少两笔属于 Q10 的有效购买）、至少 1 条符合 Q9 口径的退货记录、近 6 个月的商品浏览和近 30 天的搜索记录，并准备同一辆活跃购物车以及至少两台设备的会话和操作记录。A 和 C 联调时验证 Sarah 能用两台设备操作这辆车。时间窗按第 7 节约定。
+- **性能记录。** 在全量数据上实际运行第 7 节全部 13 题。各题负责人记录结果、三次耗时的中位数和可获取的执行计划。跨库题按第 6 节的端到端口径计时。Q2 的三次测试使用同一缓存条件并注明命中或未命中。目标是每道题在 2 秒内完成。超出时定位瓶颈，提出或实施优化；实施后记录优化前后耗时和提升幅度。
 
 ### 最终提交
 
